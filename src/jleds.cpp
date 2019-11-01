@@ -18,6 +18,8 @@
 
 #define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
 
+const size_t JsonDocCapacity = 256;
+
 static void callbackForMQTT(char* topic, byte* bytes, unsigned int length);
 static void setComponent(int c, float value);
 
@@ -44,7 +46,7 @@ static PubSubClient s_mqttClient(s_espClient);
 static uint32_t s_timeLastConnect;
 static bool s_hasTriedToConnect;
 static bool s_mqttConnected;
-static char s_buf[64];
+static char s_buf[128];
 
 // State
 static uint32_t s_lastBlinkAt;
@@ -106,7 +108,19 @@ static void publishStatus()
 
 static void publishLightState()
 {
-  s_mqttClient.publish(MQTT_LIGHT_STATE_TOPIC, s_state ? "ON" : "OFF", true);
+  DynamicJsonDocument doc(JsonDocCapacity);
+
+  doc["state"] = s_state ? "ON" : "OFF";
+  doc["effect"] = s_effect ? s_effect->name() : "none";
+  doc["white_value"] = s_white;
+
+  JsonObject color = doc.createNestedObject("color");
+  color["r"] = s_red;
+  color["g"] = s_green;
+  color["b"] = s_blue;
+
+  serializeJson(doc, s_buf, sizeof(s_buf));
+  s_mqttClient.publish(MQTT_LIGHT_STATE_TOPIC, s_buf, true);
 }
 
 static void setLightState(bool state)
@@ -114,28 +128,12 @@ static void setLightState(bool state)
   s_state = state;
 }
 
-static void publishRGB()
-{
-  snprintf(s_buf, sizeof(s_buf), "%d,%d,%d", s_red, s_green, s_blue);
-  s_mqttClient.publish(MQTT_RGB_STATE_TOPIC, s_buf, true);
-}
-
-static void setRGB(uint8_t red, uint8_t green, uint8_t blue)
+static void setRGBW(uint8_t red, uint8_t green, uint8_t blue, uint8_t white)
 {
   s_red = red;
   s_green = green;
   s_blue = blue;
-}
-
-static void setWhite(uint8_t white)
-{
   s_white = white;
-}
-
-static void publishWhite()
-{
-  snprintf(s_buf, sizeof(s_buf), "%d", s_white);
-  s_mqttClient.publish(MQTT_WHITE_STATE_TOPIC, s_buf, true);
 }
 
 static void setEffect(const String& name)
@@ -148,11 +146,6 @@ static void setEffect(const String& name)
       break;
     }
   }
-}
-
-static void publishEffect()
-{
-  s_mqttClient.publish(MQTT_EFFECT_STATE_TOPIC, s_effect ? s_effect->name() : "", true);
 }
 
 static void setupMQTT() {
@@ -175,13 +168,7 @@ static bool connectMQTT() {
   Serial.println("Connected to MQTT server");
   publishStatus();
   publishLightState();
-  publishRGB();
-  publishWhite();
-  publishEffect();
   s_mqttClient.subscribe(MQTT_LIGHT_COMMAND_TOPIC);
-  s_mqttClient.subscribe(MQTT_RGB_COMMAND_TOPIC);
-  s_mqttClient.subscribe(MQTT_WHITE_COMMAND_TOPIC);
-  s_mqttClient.subscribe(MQTT_EFFECT_COMMAND_TOPIC);
 
   return true;
 }
@@ -261,43 +248,21 @@ static void callbackForMQTT(char* topic, byte* bytes, unsigned int length)
     payload += (char)bytes[i];
   }
   Serial.printf("Topic: %s, payload: %s\n", topic, payload.c_str());
-  if (String(MQTT_LIGHT_COMMAND_TOPIC).equals(topic)) {
-    setLightState(payload == "ON");
+  if (String(topic) == String(MQTT_LIGHT_COMMAND_TOPIC)) {
+    DynamicJsonDocument doc(JsonDocCapacity);
+    DeserializationError err = deserializeJson(doc, bytes, length);
+    if (err) {
+      Serial.printf("deserializeJson Error: %s\n", err.c_str());
+      return;
+    }
+    setLightState(String((const char*)doc["state"]).equals("ON"));
+    const int r = doc["color"]["r"];
+    const int g = doc["color"]["g"];
+    const int b = doc["color"]["b"];
+    const int w = doc["white_value"];
+    setRGBW(r, g, b, w);
+    setEffect(doc["effect"]);
     publishLightState();
-  }
-  else if (String(MQTT_RGB_COMMAND_TOPIC).equals(topic)) {
-    uint8_t firstIndex = payload.indexOf(',');
-    uint8_t lastIndex = payload.lastIndexOf(',');
-
-    int rgb_red = payload.substring(0, firstIndex).toInt();
-    if (rgb_red < 0 || rgb_red > 255) {
-      return;
-    }
-
-    int rgb_green = payload.substring(firstIndex + 1, lastIndex).toInt();
-    if (rgb_green < 0 || rgb_green > 255) {
-      return;
-    }
-
-    int rgb_blue = payload.substring(lastIndex + 1).toInt();
-    if (rgb_blue < 0 || rgb_blue > 255) {
-      return;
-    }
-
-    setRGB(rgb_red, rgb_green, rgb_blue);
-    publishRGB();
-  }
-  else if (String(MQTT_WHITE_STATE_TOPIC).equals(topic)) {
-    int white = payload.toInt();
-    if (white < 0 || white > 255) {
-      return;
-    }
-    setWhite(white);
-    publishWhite();
-  }
-  else if (String(MQTT_EFFECT_COMMAND_TOPIC).equals(topic)) {
-    setEffect(payload);
-    publishEffect();
   }
 }
 
