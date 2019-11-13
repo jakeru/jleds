@@ -156,7 +156,7 @@ static bool connectMQTT() {
                   MQTT_SERVER, MQTT_SERVER_PORT);
     if (!s_mqttClient.connect(
             MQTT_CLIENT_ID, MQTT_USER, MQTT_PASSWORD,
-            MQTT_STATUS_TOPIC, 0, 1, "online")) {
+            MQTT_STATUS_TOPIC, 0, 1, "offline")) {
         Serial.print("Failed to connect to MQTT server: ");
         Serial.println(s_mqttClient.state());
         return false;
